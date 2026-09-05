@@ -1,0 +1,44 @@
+# docker-compose.yml
+# Defines a three-tier application: web server, app, and database.
+
+# Top-level 'services' key lists each container in the stack
+services:
+
+  # Frontend: Nginx  reverse proxy serving static files
+  web:
+    # Pull the Nginx image from Docker Hub
+    image: nginx:latest
+    ports:
+      # Map host port 8080 to container port 80
+      - "8080:80"
+    volumes:
+      # Mount local ./html directory into Nginx's web root (read-only)
+      - ./html:/usr/share/nginx/html:ro
+    depends_on:
+      #Wait for 'app' to start before starting 'web'
+      - app
+  # Backend: Python application server
+  app:
+    # Use the official Python 3.12 slim image
+    image: python:3.12-slim
+    environment:
+      # Connestion string uses the 'db' service name as the hostname
+      - DATABASE_URL=postgres://db:5432//myapp
+    volumes:
+      # Named volume for persistent application data
+      - app-data:/app/sargent-data
+  # Database: PostgreSQL
+  db:
+    # PostgreSQL 15 from Docker Hub
+    image: postgres:15
+    volumes:
+      #Named Volume so database data survives container removal
+      - pg-data:/var/lib/postgresql/sargent-data
+    environment:
+      # Required: sets the PostgreSQL superuser password
+      - POSTGRES_PASSWD=secure
+# Top-level 'volumes' key declares names volumes managed by Docker
+# These persist across 'docker compose down' unless you pass -v
+volumes:
+  app-data:
+  pg-data:
