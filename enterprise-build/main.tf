@@ -1,4 +1,6 @@
-# main.tf: Phase 1, providers and student_name
+# main.tf: SYS-350 Enterprise Build, Part I (instructor reference, fixed version)
+# DEVIATION: pool "default" -> "msargent-default" (3 places). No default pool
+# exists on cncs206 and atolbert-default already owns /var/lib/libvirt/images.
 
 terraform {
   required_providers {
@@ -18,7 +20,6 @@ terraform {
 }
 
 provider "docker" {
-  # Local Docker daemon on the hypervisor host. No extra config needed.
 }
 
 provider "libvirt" {
@@ -105,40 +106,41 @@ variable "win11_image_path" {
 locals {
   os_defaults = {
     win-server = {
-      image       = var.win_server_image_path
-      vcpu        = 2
-      memory_mb   = 2048
-      disk_bus    = "sata"
-      disk_dev    = "sda"
-      nic         = "e1000e"
-      uefi        = false
-      loader      = null
-      nvram_tmpl  = null
-      cloud_init  = false
+      image      = var.win_server_image_path
+      vcpu       = 2
+      memory_mb  = 2048
+      disk_bus   = "sata"
+      disk_dev   = "sda"
+      nic        = "e1000e"
+      # BIOS/MBR image: no UEFI, no OVMF, no NVRAM
+      uefi       = false
+      loader     = null
+      nvram_tmpl = null
+      cloud_init = false
     }
     win11 = {
-      image       = var.win11_image_path
-      vcpu        = 4
-      memory_mb   = 4096
-      disk_bus    = "sata"
-      disk_dev    = "sda"
-      nic         = "e1000e"
-      uefi        = true
-      loader      = "/usr/share/OVMF/OVMF_CODE_4M.ms.fd"
-      nvram_tmpl  = "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
-      cloud_init  = false
+      image      = var.win11_image_path
+      vcpu       = 4
+      memory_mb  = 4096
+      disk_bus   = "sata"
+      disk_dev   = "sda"
+      nic        = "e1000e"
+      uefi       = true
+      loader     = "/usr/share/OVMF/OVMF_CODE_4M.ms.fd"
+      nvram_tmpl = "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
+      cloud_init = false
     }
     ubuntu-server = {
-      image       = var.cloud_image_path
-      vcpu        = 2
-      memory_mb   = 2048
-      disk_bus    = "virtio"
-      disk_dev    = "vda"
-      nic         = "virtio"
-      uefi        = false
-      loader      = null
-      nvram_tmpl  = null
-      cloud_init  = true
+      image      = var.cloud_image_path
+      vcpu       = 2
+      memory_mb  = 2048
+      disk_bus   = "virtio"
+      disk_dev   = "vda"
+      nic        = "virtio"
+      uefi       = false
+      loader     = null
+      nvram_tmpl = null
+      cloud_init = true
     }
   }
 
@@ -188,12 +190,6 @@ resource "docker_container" "service" {
   restart = "unless-stopped"
 }
 
-# =====================================================================
-# main.tf: Phase 4 (Lesson 6) - libvirt network, TLS key, cloud-init,
-# Ubuntu volumes, Windows disk copy, both domains
-# =====================================================================
-
-# --- Corporate LAN (NAT) --------------------------------------------
 resource "libvirt_network" "corp" {
   name      = "${var.student_name}-corp-lan"
   autostart = true
@@ -215,17 +211,10 @@ resource "libvirt_network" "corp" {
   }]
 }
 
-# --- SSH keypair (public key goes into cloud-init) -------------------
 resource "tls_private_key" "deploy" {
   algorithm = "ED25519"
 }
 
-output "deploy_private_key_pem" {
-  value     = tls_private_key.deploy.private_key_pem
-  sensitive = true
-}
-
-# --- Cloud-init ISO (Ubuntu only) ------------------------------------
 resource "libvirt_cloudinit_disk" "init" {
   for_each = { for k, v in local.vms : k => v if v.cloud_init }
 
@@ -243,7 +232,6 @@ resource "libvirt_cloudinit_disk" "init" {
   })
 }
 
-# --- Ubuntu volumes (copy-on-write) ----------------------------------
 resource "libvirt_volume" "ubuntu_base" {
   for_each = { for k, v in local.vms : k => v if v.cloud_init }
 
@@ -266,7 +254,7 @@ resource "libvirt_volume" "vm_disk" {
 
   name     = "${each.key}.qcow2"
   pool     = "msargent-default"
-  capacity = 21474836480 # 20 GB thin provisioned
+  capacity = 21474836480  # 20 GB thin provisioned
 
   target = {
     format = { type = "qcow2" }
@@ -278,7 +266,6 @@ resource "libvirt_volume" "vm_disk" {
   }
 }
 
-# --- Windows full disk copies (no overlays) --------------------------
 resource "terraform_data" "windows_disk" {
   for_each = { for k, v in local.vms : k => v if !v.cloud_init }
 
@@ -297,9 +284,112 @@ resource "terraform_data" "windows_disk" {
   }
 }
 
-# --- Windows domains (UEFI) ------------------------------------------
+resource "libvirt_domain" "windows" {
+  for_each = { for k, v in local.vms : k => v if !v.cloud_init }
 
-# --- Ubuntu domain (BIOS + cloud-init cdrom) -------------------------
+  name        = each.key
+  memory      = each.value.memory
+  memory_unit = "KiB"
+  vcpu        = each.value.vcpu
+  type        = "kvm"
+  autostart   = true
+  running     = true
+
+  # FIX 1: host-passthrough. The libvirt default qemu64 CPU model
+  # lacks features Windows 11/Server 2025 need and the guest loops
+  # in "Preparing Automatic Repair" while the domain stays running.
+  cpu = {
+    mode = "host-passthrough"
+  }
+
+  clock = {
+    offset = "localtime"
+    timer  = [{ name = "hypervclock", present = "yes" }]
+  }
+
+  features = {
+    acpi = true
+    apic = {}
+    smm  = each.value.uefi ? { state = "on" } : null
+    hyper_v = {
+      mode        = "custom"
+      relaxed     = { state = "on" }
+      vapic       = { state = "on" }
+      spinlocks   = { state = "on", retries = 4095 }
+      vp_index    = { state = "on" }
+      runtime     = { state = "on" }
+      synic       = { state = "on" }
+      stimer      = { state = "on", direct = { state = "on" } }
+      frequencies = { state = "on" }
+      tlb_flush   = { state = "on", direct = { state = "on" } }
+      ipi         = { state = "on" }
+      evmcs       = { state = "on" }
+    }
+  }
+
+  os = {
+    type            = "hvm"
+    type_arch       = "x86_64"
+    type_machine    = "q35"
+    # FIX 2: attach UEFI only when the OS profile asks for it. The
+    # Windows Server golden image is BIOS/MBR: OVMF reports "No
+    # bootable option or device was found" if firmware is forced.
+    firmware        = each.value.uefi ? "efi" : null
+    loader          = each.value.uefi ? each.value.loader : null
+    loader_readonly = each.value.uefi ? "yes" : null
+    loader_type     = each.value.uefi ? "pflash" : null
+    loader_format   = each.value.uefi ? "raw" : null
+    nv_ram = each.value.uefi ? {
+      nv_ram          = "/var/lib/libvirt/qemu/nvram/${each.key}_VARS.fd"
+      template        = each.value.nvram_tmpl
+      template_format = "raw"
+      format          = "raw"
+    } : null
+    boot_devices = [{ dev = "hd" }]
+  }
+
+  devices = {
+    disks = [{
+      source = {
+        file = {
+          file = "/var/lib/libvirt/images/${each.key}.qcow2"
+        }
+      }
+      driver = { type = "qcow2" }
+      target = {
+        dev = each.value.disk_dev
+        bus = each.value.disk_bus
+      }
+    }]
+    interfaces = [{
+      model = { type = each.value.nic }
+      source = {
+        network = { network = libvirt_network.corp.name }
+      }
+    }]
+    graphics = [{
+      vnc = { auto_port = true }
+    }]
+    # TPM 2.0 emulator: Windows 11 enables Device Encryption on its
+    # own during setup. The volume boots under a fresh vTPM.
+    tpms = [{
+      model = "tpm-crb"
+      backend = {
+        emulator = {
+          version = "2.0"
+        }
+      }
+    }]
+    serials    = [{ type = "pty" }]
+    consoles   = [{
+      type   = "pty"
+      target = { type = "serial", port = 0 }
+    }]
+  }
+
+  depends_on = [terraform_data.windows_disk]
+}
+
 resource "libvirt_domain" "ubuntu" {
   for_each = { for k, v in local.vms : k => v if v.cloud_init }
 
@@ -351,20 +441,16 @@ resource "libvirt_domain" "ubuntu" {
         device = "cdrom"
       }
     ]
-
     interfaces = [{
       model = { type = each.value.nic }
       source = {
         network = { network = libvirt_network.corp.name }
       }
     }]
-
     graphics = [{
       vnc = { auto_port = true }
     }]
-
-    serials = [{ type = "pty" }]
-
+    serials  = [{ type = "pty" }]
     consoles = [{
       type   = "pty"
       target = { type = "serial", port = 0 }
@@ -376,7 +462,6 @@ resource "libvirt_domain" "ubuntu" {
     libvirt_cloudinit_disk.init
   ]
 }
-# main.tf: Phase 5, outputs
 
 output "docker_services" {
   description = "Docker services deployed on the host"
@@ -402,80 +487,10 @@ output "corp_network" {
   description = "KVM NAT network"
   value       = libvirt_network.corp.name
 }
-# --- Windows domains -------------------------------------------------
-# DEVIATION: covers every non-cloud-init VM. UEFI settings apply only when
-# the OS profile has uefi = true (Win11). Windows Server boots with BIOS.
-resource "libvirt_domain" "windows" {
-  for_each = { for k, v in local.vms : k => v if !v.cloud_init }
 
-  name        = each.key
-  memory      = each.value.memory
-  memory_unit = "KiB"
-  vcpu        = each.value.vcpu
-  type        = "kvm"
-  autostart   = true
-  running     = true
-
-  cpu = {
-    mode = "host-passthrough"
-  }
-
-  features = {
-    acpi = true
-    apic = {}
-    smm  = each.value.uefi ? { state = "on" } : null
-  }
-
-  os = {
-    type            = "hvm"
-    type_arch       = "x86_64"
-    type_machine    = "q35"
-    firmware        = each.value.uefi ? "efi" : null
-    loader          = each.value.loader
-    loader_readonly = each.value.uefi ? "yes" : null
-    loader_type     = each.value.uefi ? "pflash" : null
-    loader_format   = each.value.uefi ? "raw" : null
-    nv_ram = each.value.uefi ? {
-      nv_ram          = "/var/lib/libvirt/qemu/nvram/${each.key}_VARS.fd"
-      template        = each.value.nvram_tmpl
-      template_format = "raw"
-      format          = "raw"
-    } : null
-    boot_devices = [{ dev = "hd" }]
-  }
-
-  devices = {
-    disks = [{
-      source = {
-        file = {
-          file = "/var/lib/libvirt/images/${each.key}.qcow2"
-        }
-      }
-      driver = { type = "qcow2" }
-      target = {
-        dev = each.value.disk_dev
-        bus = each.value.disk_bus
-      }
-    }]
-
-    interfaces = [{
-      model = { type = each.value.nic }
-      source = {
-        network = { network = libvirt_network.corp.name }
-      }
-    }]
-
-    graphics = [{
-      vnc = { auto_port = true }
-    }]
-
-    serials = [{ type = "pty" }]
-
-    consoles = [{
-      type   = "pty"
-      target = { type = "serial", port = 0 }
-    }]
-  }
-
-  depends_on = [terraform_data.windows_disk]
+# Optional: lets you save the SSH private key locally with
+# terraform output -raw deploy_private_key_pem > deploy_key
+output "deploy_private_key_pem" {
+  value     = tls_private_key.deploy.private_key_pem
+  sensitive = true
 }
