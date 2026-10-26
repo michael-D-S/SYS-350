@@ -1,0 +1,19 @@
+# docker-compose.yml: floci for msargent on shared host cncs206
+# DEVIATION: host ports moved into msargent's 3000-3012 range
+#   3009 -> 4566 (AWS API), 3010 -> 7001 (RDS proxy)
+#   EC2 SSH ports 3011-3012 instead of 2200-2299
+name: msargent-floci
+services:
+  floci:
+    image: floci/floci:latest
+    container_name: msargent-floci
+    ports:
+      - "3009:4566"
+      - "3010:7001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - FLOCI_SERVICES_UI_ENABLED=false
+      - FLOCI_SERVICES_EC2_SSH_PORT_RANGE_START=3011
+      - FLOCI_SERVICES_EC2_SSH_PORT_RANGE_END=3012
+      - FLOCI_DOCKER_RESOURCE_NAMESPACE=msargent

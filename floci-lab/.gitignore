@@ -1,0 +1,9 @@
+# Terraform working files and state (state holds generated keys and passwords)
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# SSH key pair for the EC2 lesson - never commit the private key
+lab-key
+lab-key.pub
