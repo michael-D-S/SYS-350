@@ -30,6 +30,9 @@ jobs:
       - name: Validate configuration
         run: terraform validate -no-color
 
+      - name: Build Lambda package
+        run: cd lambda && zip ../lambda.zip lambda_function.py
+
       - name: Start floci
         run: |
           docker run -d --name floci -p 4566:4566 \
@@ -53,9 +56,6 @@ jobs:
       - name: Apply
         if: github.event_name == 'push'
         run: terraform apply -input=false -auto-approve tfplan
-
-      - name: Build Lambda package
-        run: cd lambda && zip ../lambda.zip lambda_function.py
 
       - name: Verify S3 website
         if: github.event_name == 'push'
