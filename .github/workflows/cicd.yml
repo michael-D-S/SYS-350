@@ -9,6 +9,11 @@ on:
 jobs:
   terraform:
     runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      TF_VAR_student_name: student
     # DEVIATION: the lab lives in cicd-lab/ because this repo's root is my
     # home folder. Every run: step executes from inside that folder.
     defaults:
@@ -67,3 +72,7 @@ jobs:
         run: |
           aws dynamodb list-tables --endpoint-url http://localhost:4566
           aws lambda list-functions --endpoint-url http://localhost:4566
+
+      - name: Destroy
+        if: github.event_name == 'push'
+        run: terraform destroy -input=false -auto-approve
